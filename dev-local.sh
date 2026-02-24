@@ -61,12 +61,15 @@ show_logs() {
     notification)
       dc logs -f --tail=100 notification-service
       ;;
+    web)
+      dc logs -f --tail=100 web-nextjs
+      ;;
     all)
       dc logs -f --tail=100
       ;;
     *)
       echo "Unknown log target: $target"
-      echo "Usage: $0 logs [order|inventory|orchestrator|shipping|payment|read-model|notification|all]"
+      echo "Usage: $0 logs [order|inventory|orchestrator|shipping|payment|read-model|notification|web|all]"
       exit 1
       ;;
   esac
@@ -81,7 +84,7 @@ Commands:
   down               Stop all Docker services
   restart            Restart all Docker services
   status             Show Docker service status
-  logs [target]      Stream logs (target: order|inventory|orchestrator|shipping|payment|read-model|notification|all)
+  logs [target]      Stream logs (target: order|inventory|orchestrator|shipping|payment|read-model|notification|web|all)
 USAGE
 }
 

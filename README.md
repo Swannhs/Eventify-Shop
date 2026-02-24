@@ -16,8 +16,9 @@ Implemented in this repository:
 - `services/shipping-service-express-ts`: Express + TypeScript shipping service consuming lifecycle events
 - `services/read-model-laravel`: Laravel CQRS read projections + Kafka adapter (`orders.events`, `order.lifecycle.events`, `shipping.events`)
 - `services/notification-service-express-ts`: Express + TypeScript notification mock consumer (`order.lifecycle.events`, `shipping.events`)
+- `apps/web-nextjs`: Next.js TypeScript UI using read-model API (`/orders`, `/orders/[id]`)
 
-Planned next: notifications and web app.
+Planned next: polish and observability improvements.
 
 ## Architecture Principles
 
@@ -67,6 +68,8 @@ services/
   shipping-service-express-ts/
   read-model-laravel/
   notification-service-express-ts/
+apps/
+  web-nextjs/
 ```
 
 ## Prerequisites
@@ -96,6 +99,9 @@ Default values:
 - `SHIPPING_SERVICE_PORT=8084`
 - `PAYMENT_SERVICE_PORT=8085`
 - `READ_MODEL_SERVICE_PORT=8086`
+- `NOTIFICATION_SERVICE_PORT=8087`
+- `WEB_NEXTJS_PORT=3000`
+- `NEXT_PUBLIC_READ_MODEL_URL=http://localhost:8086`
 
 ## Local Dev Script
 
@@ -119,6 +125,7 @@ Useful commands:
 ./dev-local.sh logs payment
 ./dev-local.sh logs read-model
 ./dev-local.sh logs notification
+./dev-local.sh logs web
 ./dev-local.sh restart
 ./dev-local.sh down
 ```
@@ -137,6 +144,7 @@ curl -sS http://localhost:8082/health
 curl -sS http://localhost:8084/health
 curl -sS http://localhost:8086/api/health
 curl -sS http://localhost:8087/health
+curl -sS http://localhost:3000/orders
 docker exec eventify-kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list | sort
 ```
 
@@ -152,6 +160,7 @@ Expected:
 - Shipping service on `localhost:8084`
 - Read model API on `localhost:8086` and `read-model-adapter` Kafka consumer running in Docker
 - Notification service on `localhost:8087`
+- Web UI on `http://localhost:3000`
 - required topics are listed (`orders.events`, `inventory.events`, `payments.events`, `order.lifecycle.events`, `shipping.events`, `payments.dlq`, `inventory.dlq`)
 
 Stop everything:
@@ -325,6 +334,19 @@ Expected:
 - Every record includes `eventType`, `correlationId`, and `orderId`
 - Re-sending an already processed event (`same eventId`) is skipped by idempotency table `notification_processed_events`
 
+9. Verify web UI reads projections.
+
+Open:
+
+- `http://localhost:3000/orders`
+- `http://localhost:3000/orders/<orderId>`
+
+Expected:
+
+- `/orders` shows the projected order list from read-model service
+- `/orders/<orderId>` shows order details and shipment entries when available
+- After new events are processed, refresh the page to see updated state
+
 ## Local Checks Run
 
 The following were run for this state:
@@ -339,6 +361,8 @@ The following were run for this state:
 - `npm run build` in `services/shipping-service-express-ts`
 - `npm run typecheck`
 - `npm run build` in `services/notification-service-express-ts`
+- `npm run typecheck`
+- `npm run build` in `apps/web-nextjs`
 
 ## Notes
 
@@ -346,6 +370,7 @@ The following were run for this state:
 - Payment service uses an adapter pattern: Node `payment-adapter` handles Kafka I/O and calls Laravel endpoint `/api/internal/payments/process-order-placed` for idempotent payment decisions.
 - Read model service uses an adapter pattern: Node `read-model-adapter` consumes `orders.events`, `order.lifecycle.events`, and `shipping.events` then applies projections through `/api/internal/projections/apply`.
 - Notification service consumes `order.lifecycle.events` and `shipping.events`, logs correlation data, and exposes in-memory recent notifications via `GET /notifications`.
+- Web UI uses `NEXT_PUBLIC_READ_MODEL_URL` and proxies data through Next.js API routes to avoid browser CORS issues in local development.
 - Shipping service reads consumer group from `SHIPPING_KAFKA_GROUP_ID` (default: `shipping-service-group`).
 - Orchestrator reads consumer group from `KAFKA_GROUP_ID` (default: `order-orchestrator`).
 - Order service currently uses JPA `ddl-auto=update`; migrations can be added next.
