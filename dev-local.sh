@@ -6,8 +6,10 @@ COMPOSE_FILE="$ROOT_DIR/infra/docker-compose.yml"
 STATE_DIR="$ROOT_DIR/.dev-local"
 MAVEN_REPO_DIR="$ROOT_DIR/.m2/repository"
 ORDER_PID_FILE="$STATE_DIR/order-service.pid"
+ORCHESTRATOR_PID_FILE="$STATE_DIR/order-orchestrator.pid"
 SHIPPING_PID_FILE="$STATE_DIR/shipping-service.pid"
 ORDER_LOG="$STATE_DIR/order-service.log"
+ORCHESTRATOR_LOG="$STATE_DIR/order-orchestrator.log"
 SHIPPING_LOG="$STATE_DIR/shipping-service.log"
 
 mkdir -p "$STATE_DIR"
@@ -118,12 +120,34 @@ start_shipping_service() {
   echo "shipping-service started. Log: $SHIPPING_LOG"
 }
 
+start_orchestrator_service() {
+  if [[ -f "$ORCHESTRATOR_PID_FILE" ]] && is_pid_running "$(cat "$ORCHESTRATOR_PID_FILE")"; then
+    echo "order-orchestrator already running (pid=$(cat "$ORCHESTRATOR_PID_FILE"))."
+    return
+  fi
+
+  require_cmd npm
+  echo "Starting order-orchestrator (TypeScript) on ORDER_ORCHESTRATOR_PORT (default 8082)..."
+  pushd "$ROOT_DIR/services/order-orchestrator-nest" >/dev/null
+  if [[ ! -d node_modules ]]; then
+    npm install --no-audit --no-fund >/dev/null
+  fi
+  popd >/dev/null
+
+  local pid
+  pid="$(start_detached "$ORCHESTRATOR_LOG" bash -lc "cd \"$ROOT_DIR/services/order-orchestrator-nest\" && exec ./node_modules/.bin/tsx src/main.ts")"
+
+  echo "$pid" >"$ORCHESTRATOR_PID_FILE"
+  echo "order-orchestrator started. Log: $ORCHESTRATOR_LOG"
+}
+
 start_all() {
   require_cmd docker
   echo "Starting infra (Kafka, Kafka UI, Postgres)..."
   docker compose -f "$COMPOSE_FILE" up -d --remove-orphans
   ensure_kafka_topics
   start_order_service
+  start_orchestrator_service
   start_shipping_service
   echo
   status
@@ -131,6 +155,7 @@ start_all() {
 
 stop_all() {
   stop_pid_file "$ORDER_PID_FILE" "order-service"
+  stop_pid_file "$ORCHESTRATOR_PID_FILE" "order-orchestrator"
   stop_pid_file "$SHIPPING_PID_FILE" "shipping-service"
 
   require_cmd docker
@@ -151,6 +176,12 @@ status() {
     echo "order-service: stopped"
   fi
 
+  if [[ -f "$ORCHESTRATOR_PID_FILE" ]] && is_pid_running "$(cat "$ORCHESTRATOR_PID_FILE")"; then
+    echo "order-orchestrator: running (pid=$(cat "$ORCHESTRATOR_PID_FILE"))"
+  else
+    echo "order-orchestrator: stopped"
+  fi
+
   if [[ -f "$SHIPPING_PID_FILE" ]] && is_pid_running "$(cat "$SHIPPING_PID_FILE")"; then
     echo "shipping-service: running (pid=$(cat "$SHIPPING_PID_FILE"))"
   else
@@ -160,6 +191,7 @@ status() {
   echo
   echo "Logs:"
   echo "- $ORDER_LOG"
+  echo "- $ORCHESTRATOR_LOG"
   echo "- $SHIPPING_LOG"
 }
 
@@ -176,8 +208,14 @@ show_logs() {
       echo "---- order-service ----"
       tail -n 80 "$ORDER_LOG" 2>/dev/null || true
       echo
+      echo "---- order-orchestrator ----"
+      tail -n 80 "$ORCHESTRATOR_LOG" 2>/dev/null || true
+      echo
       echo "---- shipping-service ----"
       tail -n 80 "$SHIPPING_LOG" 2>/dev/null || true
+      ;;
+    orchestrator)
+      tail -n 100 -f "$ORCHESTRATOR_LOG"
       ;;
     *)
       echo "Unknown log target: $target"
@@ -192,11 +230,11 @@ usage() {
 Usage: ./dev-local.sh <command>
 
 Commands:
-  up                 Start infra + order-service + shipping-service
+  up                 Start infra + order-service + order-orchestrator + shipping-service
   down               Stop local services + infra
   restart            Restart everything
   status             Show infra and local process status
-  logs [target]      Show logs (target: order|shipping|all)
+  logs [target]      Show logs (target: order|orchestrator|shipping|all)
 USAGE
 }
 
