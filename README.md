@@ -149,6 +149,7 @@ npm run dev
 
 ```bash
 curl -i -X POST http://localhost:8081/orders \
+  -H 'X-Correlation-Id: 11111111-1111-1111-1111-111111111111' \
   -H 'Content-Type: application/json' \
   -d '{
     "customerId":"c-1001",
@@ -162,16 +163,26 @@ curl -i -X POST http://localhost:8081/orders \
 Expected:
 
 - HTTP `201` from order service
+- response includes the same `correlationId` (if header is provided and valid UUID)
 - Message appears in Kafka UI topic `orders.events` with `eventType=OrderPlaced`
 
 2. Simulate lifecycle confirmation and verify shipping emits `ShipmentCreated`.
 
-Publish an `OrderConfirmed` message in Kafka UI to topic `order.lifecycle.events` (or via CLI producer), then check `shipping.events`.
+Publish an `OrderConfirmed` message via Kafka CLI:
+
+```bash
+docker exec -i eventify-kafka /opt/kafka/bin/kafka-console-producer.sh \
+  --bootstrap-server localhost:9092 \
+  --topic order.lifecycle.events <<'EOF'
+{"eventId":"22222222-2222-2222-2222-222222222222","eventType":"OrderConfirmed","occurredAt":"2026-01-01T00:00:00Z","correlationId":"11111111-1111-1111-1111-111111111111","producer":"order-orchestrator","version":1,"payload":{"orderId":"33333333-3333-3333-3333-333333333333"}}
+EOF
+```
 
 Expected:
 
 - A `ShipmentCreated` event is published
-- Duplicate `eventId` is ignored by shipping consumer idempotency set
+- Duplicate `eventId` is ignored by shipping consumer using `processed_events` table
+- Logs include `correlationId` for receive/duplicate/publish paths
 
 ## Local Checks Run
 

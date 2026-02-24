@@ -3,6 +3,7 @@ package com.eventify.orderservice.service;
 import com.eventify.orderservice.controller.CreateOrderRequest;
 import com.eventify.orderservice.controller.CreateOrderResponse;
 import com.eventify.orderservice.domain.OrderEntity;
+import com.eventify.orderservice.domain.OrderItemEntity;
 import com.eventify.orderservice.domain.OrderRepository;
 import com.eventify.orderservice.domain.OrderStatus;
 import com.eventify.orderservice.outbox.OutboxEventEntity;
@@ -16,6 +17,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import org.springframework.stereotype.Service;
+import org.springframework.web.server.ResponseStatusException;
+import org.springframework.http.HttpStatus;
 
 @Service
 public class OrderApplicationService {
@@ -33,14 +36,12 @@ public class OrderApplicationService {
     }
 
     @Transactional
-    public CreateOrderResponse createOrder(CreateOrderRequest request) {
+    public CreateOrderResponse createOrder(CreateOrderRequest request, String incomingCorrelationId) {
         String orderId = UUID.randomUUID().toString();
-        String correlationId = UUID.randomUUID().toString();
+        String correlationId = resolveCorrelationId(incomingCorrelationId);
 
-        String itemsJson;
         String eventPayload;
         try {
-            itemsJson = objectMapper.writeValueAsString(request.items());
             eventPayload = buildOrderPlacedEnvelope(orderId, correlationId, request.items());
         } catch (JsonProcessingException e) {
             throw new IllegalStateException("Failed to serialize order payload", e);
@@ -49,10 +50,14 @@ public class OrderApplicationService {
         OrderEntity order = new OrderEntity(
                 orderId,
                 request.customerId(),
-                itemsJson,
                 OrderStatus.CREATED.name(),
                 OffsetDateTime.now()
         );
+
+        for (CreateOrderRequest.Item item : request.items()) {
+            order.addItem(new OrderItemEntity(item.sku(), item.quantity()));
+        }
+
         orderRepository.save(order);
 
         OutboxEventEntity outbox = new OutboxEventEntity(
@@ -66,6 +71,18 @@ public class OrderApplicationService {
         outboxEventRepository.save(outbox);
 
         return new CreateOrderResponse(orderId, OrderStatus.CREATED.name(), correlationId);
+    }
+
+    private String resolveCorrelationId(String incomingCorrelationId) {
+        if (incomingCorrelationId == null || incomingCorrelationId.isBlank()) {
+            return UUID.randomUUID().toString();
+        }
+
+        try {
+            return UUID.fromString(incomingCorrelationId).toString();
+        } catch (IllegalArgumentException ex) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "X-Correlation-Id must be a valid UUID");
+        }
     }
 
     private String buildOrderPlacedEnvelope(String orderId,
