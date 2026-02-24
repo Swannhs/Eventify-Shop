@@ -52,5 +52,109 @@ services:
       kafka:
         condition: service_healthy
 
+  topic-init:
+    image: apache/kafka:3.7.1
+    container_name: eventify-topic-init
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint:
+      - /bin/bash
+      - -lc
+      - |
+        set -e
+        create_topic() {
+          local topic_name="$1"
+          local max_retries=10
+          local attempt=1
+          until [ "$$attempt" -gt "$$max_retries" ]; do
+            if timeout 15s /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:29092 --create --if-not-exists --topic "$$topic_name" --partitions 3 --replication-factor 1; then
+              return 0
+            fi
+            echo "retry $$attempt/$$max_retries for topic=$$topic_name"
+            attempt=$$((attempt + 1))
+            sleep 2
+          done
+          return 1
+        }
+        topics=(
+          "orders.events"
+          "inventory.events"
+          "payments.events"
+          "order.lifecycle.events"
+          "shipping.events"
+          "payments.dlq"
+          "inventory.dlq"
+        )
+        for topic in "$${topics[@]}"; do
+          create_topic "$$topic"
+        done
+    restart: "no"
+
+  order-service:
+    build:
+      context: ../services/order-service-spring
+      dockerfile: Dockerfile
+    container_name: eventify-order-service
+    environment:
+      KAFKA_BROKERS: kafka:29092
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: app
+      DB_PASS: app
+      DB_NAME: eventify
+      ORDER_SERVICE_PORT: 8081
+    ports:
+      - "8081:8081"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+
+  order-orchestrator:
+    build:
+      context: ../services/order-orchestrator-nest
+      dockerfile: Dockerfile
+    container_name: eventify-order-orchestrator
+    environment:
+      KAFKA_BROKERS: kafka:29092
+      KAFKA_GROUP_ID: order-orchestrator
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: app
+      DB_PASS: app
+      DB_NAME: eventify
+      ORDER_ORCHESTRATOR_PORT: 8082
+    ports:
+      - "8082:8082"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+
+  shipping-service:
+    build:
+      context: ../services/shipping-service-express-ts
+      dockerfile: Dockerfile
+    container_name: eventify-shipping-service
+    environment:
+      KAFKA_BROKERS: kafka:29092
+      SHIPPING_KAFKA_GROUP_ID: shipping-service-group
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: app
+      DB_PASS: app
+      DB_NAME: eventify
+      SHIPPING_SERVICE_PORT: 8084
+    ports:
+      - "8084:8084"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+
 volumes:
   postgres_data:

@@ -6,13 +6,14 @@ Production-style Event-Driven Architecture (EDA) demo for e-commerce workflows.
 
 Implemented in this repository:
 
-- `infra/docker-compose.yml`: Kafka, Kafka UI, PostgreSQL, and required topic initialization
+- `infra/docker-compose.yml`: Kafka, Kafka UI, PostgreSQL, topic initialization, and all implemented services
 - `contracts/event-envelope.json`: standard event envelope schema
 - `contracts/events/*.json`: per-event schemas
 - `services/order-service-spring`: Spring Boot order service with Outbox pattern (`POST /orders`)
+- `services/order-orchestrator-nest`: event-driven order orchestrator consuming inventory/payment outcomes
 - `services/shipping-service-express-ts`: Express + TypeScript shipping service consuming lifecycle events
 
-Planned next: orchestrator, inventory, payment, notifications, read-model, and web app.
+Planned next: inventory, payment, notifications, read-model, and web app.
 
 ## Architecture Principles
 
@@ -20,7 +21,7 @@ Planned next: orchestrator, inventory, payment, notifications, read-model, and w
 - No direct synchronous coupling in the order workflow
 - Eventual consistency
 - Outbox pattern to avoid dual writes
-- Idempotent consumers (shipping service tracks processed event IDs in-memory for now)
+- Idempotent consumers (shipping service persists processed `eventId` values in Postgres)
 
 ## Required Event Envelope
 
@@ -101,22 +102,25 @@ Useful commands:
 ./dev-local.sh status
 ./dev-local.sh logs all
 ./dev-local.sh logs order
+./dev-local.sh logs orchestrator
 ./dev-local.sh logs shipping
 ./dev-local.sh restart
 ./dev-local.sh down
 ```
 
-## Start Infra
+## Start Full Stack (Docker)
 
 ```bash
-docker compose -f infra/docker-compose.yml up -d
+docker compose -f infra/docker-compose.yml up -d --build
 ```
 
 Verify:
 
 ```bash
 docker compose -f infra/docker-compose.yml ps
-docker exec eventify-kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list
+curl -sS http://localhost:8082/health
+curl -sS http://localhost:8084/health
+docker exec eventify-kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list | sort
 ```
 
 Expected:
@@ -124,23 +128,15 @@ Expected:
 - Kafka running on `localhost:9092`
 - Kafka UI on `http://localhost:8080`
 - Postgres on `localhost:5432`
+- Order service on `localhost:8081`
+- Order orchestrator on `localhost:8082`
+- Shipping service on `localhost:8084`
 - required topics are listed (`orders.events`, `inventory.events`, `payments.events`, `order.lifecycle.events`, `shipping.events`, `payments.dlq`, `inventory.dlq`)
 
-## Run Services
-
-Order Service (Spring Boot):
+Stop everything:
 
 ```bash
-cd services/order-service-spring
-mvn spring-boot:run
-```
-
-Shipping Service (Express + TS):
-
-```bash
-cd services/shipping-service-express-ts
-npm install
-npm run dev
+docker compose -f infra/docker-compose.yml down -v
 ```
 
 ## Manual Verification Path
@@ -166,23 +162,55 @@ Expected:
 - response includes the same `correlationId` (if header is provided and valid UUID)
 - Message appears in Kafka UI topic `orders.events` with `eventType=OrderPlaced`
 
-2. Simulate lifecycle confirmation and verify shipping emits `ShipmentCreated`.
+2. Let orchestrator emit lifecycle events automatically (no manual `OrderConfirmed`).
 
-Publish an `OrderConfirmed` message via Kafka CLI:
+Publish matching inventory + payment outcomes for the same `orderId`:
 
 ```bash
 docker exec -i eventify-kafka /opt/kafka/bin/kafka-console-producer.sh \
   --bootstrap-server localhost:9092 \
-  --topic order.lifecycle.events <<'EOF'
-{"eventId":"22222222-2222-2222-2222-222222222222","eventType":"OrderConfirmed","occurredAt":"2026-01-01T00:00:00Z","correlationId":"11111111-1111-1111-1111-111111111111","producer":"order-orchestrator","version":1,"payload":{"orderId":"33333333-3333-3333-3333-333333333333"}}
+  --topic inventory.events <<'EOF'
+{"eventId":"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa","eventType":"InventoryReserved","occurredAt":"2026-01-01T00:00:00Z","correlationId":"11111111-1111-1111-1111-111111111111","producer":"inventory-service","version":1,"payload":{"orderId":"33333333-3333-3333-3333-333333333333"}}
+EOF
+
+docker exec -i eventify-kafka /opt/kafka/bin/kafka-console-producer.sh \
+  --bootstrap-server localhost:9092 \
+  --topic payments.events <<'EOF'
+{"eventId":"bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb","eventType":"PaymentSucceeded","occurredAt":"2026-01-01T00:00:05Z","correlationId":"11111111-1111-1111-1111-111111111111","producer":"payment-service","version":1,"payload":{"orderId":"33333333-3333-3333-3333-333333333333"}}
 EOF
 ```
 
 Expected:
 
-- A `ShipmentCreated` event is published
-- Duplicate `eventId` is ignored by shipping consumer using `processed_events` table
-- Logs include `correlationId` for receive/duplicate/publish paths
+- Orchestrator publishes `OrderConfirmed` to `order.lifecycle.events`
+- `orders.status` for that `orderId` becomes `CONFIRMED` in Postgres
+- Duplicate input `eventId` values are ignored by orchestrator idempotency (`processed_events`)
+
+3. Verify cancellation path.
+
+Publish either `OutOfStock` or `PaymentFailed` for another `orderId`.
+
+Expected:
+
+- Orchestrator publishes `OrderCancelled` to `order.lifecycle.events`
+- `orders.status` for that `orderId` becomes `CANCELLED`
+
+4. Prove shipping idempotency survives restart.
+
+Restart shipping service and publish the exact same `OrderConfirmed` event again (same `eventId`):
+
+```bash
+pkill -f "shipping-service-express-ts" || true
+cd services/shipping-service-express-ts
+npm run dev
+```
+
+Then publish the same `OrderConfirmed` JSON (same `eventId`) again.
+
+Expected:
+
+- No second `ShipmentCreated` event is produced for that `eventId`
+- `shipping.events` still has exactly one shipment event for that replayed `eventId`
 
 ## Local Checks Run
 
@@ -196,5 +224,6 @@ The following were run for this state:
 
 ## Notes
 
-- Shipping idempotency is currently in-memory; move to persistent store for production behavior.
+- Shipping service reads consumer group from `SHIPPING_KAFKA_GROUP_ID` (default: `shipping-service-group`).
+- Orchestrator reads consumer group from `KAFKA_GROUP_ID` (default: `order-orchestrator`).
 - Order service currently uses JPA `ddl-auto=update`; migrations can be added next.

@@ -8,7 +8,8 @@ import { z } from 'zod';
 const app = express();
 const port = Number(process.env.SHIPPING_SERVICE_PORT ?? 8084);
 const brokers = (process.env.KAFKA_BROKERS ?? 'localhost:9092').split(',');
-const kafkaGroupId = process.env.KAFKA_GROUP_ID ?? 'shipping-service';
+const kafkaGroupId = process.env.SHIPPING_KAFKA_GROUP_ID ?? 'shipping-service-group';
+let shuttingDown = false;
 
 const dbPool = new Pool({
   host: process.env.DB_HOST ?? 'localhost',
@@ -49,7 +50,7 @@ const consumer = kafka.consumer({ groupId: kafkaGroupId });
 
 async function initIdempotencyStore(): Promise<void> {
   await dbPool.query(`
-    CREATE TABLE IF NOT EXISTS processed_events (
+    CREATE TABLE IF NOT EXISTS shipping_processed_events (
       event_id UUID PRIMARY KEY,
       processed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
@@ -57,14 +58,20 @@ async function initIdempotencyStore(): Promise<void> {
 }
 
 async function tryMarkEventAsProcessing(eventId: string): Promise<boolean> {
-  const result = await dbPool.query(
-    `INSERT INTO processed_events (event_id, processed_at)
-     VALUES ($1, NOW())
-     ON CONFLICT (event_id) DO NOTHING`,
-    [eventId]
-  );
-
-  return result.rowCount === 1;
+  try {
+    await dbPool.query(
+      `INSERT INTO shipping_processed_events (event_id, processed_at)
+       VALUES ($1, NOW())`,
+      [eventId]
+    );
+    return true;
+  } catch (error: unknown) {
+    const code = (error as { code?: string }).code;
+    if (code === '23505') {
+      return false;
+    }
+    throw error;
+  }
 }
 
 async function startKafkaLoop(): Promise<void> {
@@ -144,18 +151,60 @@ async function startKafkaLoopWithRetry(): Promise<void> {
   const retryDelayMs = 3000;
   // Keep retrying startup so transient broker/topic timing does not crash the service.
   // This is important during local startup while infra and topic init are still converging.
-  while (true) {
+  while (!shuttingDown) {
     try {
       await startKafkaLoop();
       return;
     } catch (error) {
+      if (shuttingDown) {
+        return;
+      }
       console.error('shipping-service kafka loop failed, retrying in 3s', error);
       await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
     }
   }
 }
 
-app.listen(port, () => {
+const server = app.listen(port, () => {
   console.log(`shipping-service listening on port ${port}`);
   void startKafkaLoopWithRetry();
+});
+
+async function shutdown(signal: string): Promise<void> {
+  if (shuttingDown) {
+    return;
+  }
+
+  shuttingDown = true;
+  console.log(`[shipping-service] shutdown requested by ${signal}`);
+
+  try {
+    await consumer.disconnect();
+  } catch (error) {
+    console.error('[shipping-service] consumer disconnect failed', error);
+  }
+
+  try {
+    await producer.disconnect();
+  } catch (error) {
+    console.error('[shipping-service] producer disconnect failed', error);
+  }
+
+  try {
+    await dbPool.end();
+  } catch (error) {
+    console.error('[shipping-service] db pool close failed', error);
+  }
+
+  server.close(() => {
+    process.exit(0);
+  });
+}
+
+process.on('SIGINT', () => {
+  void shutdown('SIGINT');
+});
+
+process.on('SIGTERM', () => {
+  void shutdown('SIGTERM');
 });
