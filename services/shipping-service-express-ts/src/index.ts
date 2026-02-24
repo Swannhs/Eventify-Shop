@@ -102,10 +102,22 @@ async function startKafkaLoop(): Promise<void> {
   });
 }
 
+async function startKafkaLoopWithRetry(): Promise<void> {
+  const retryDelayMs = 3000;
+  // Keep retrying startup so transient broker/topic timing does not crash the service.
+  // This is important during local startup while infra and topic init are still converging.
+  while (true) {
+    try {
+      await startKafkaLoop();
+      return;
+    } catch (error) {
+      console.error('shipping-service kafka loop failed, retrying in 3s', error);
+      await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+    }
+  }
+}
+
 app.listen(port, () => {
   console.log(`shipping-service listening on port ${port}`);
-  void startKafkaLoop().catch((error) => {
-    console.error('shipping-service kafka loop failed', error);
-    process.exit(1);
-  });
+  void startKafkaLoopWithRetry();
 });
