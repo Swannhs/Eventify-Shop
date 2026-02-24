@@ -1,0 +1,56 @@
+# -----------------------------
+# OS / editor
+# -----------------------------
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# -----------------------------
+# Environment / secrets
+# -----------------------------
+.env
+.env.*
+!.env.example
+
+# -----------------------------
+# Logs
+# -----------------------------
+*.log
+logs/
+
+# -----------------------------
+# Build artifacts (polyglot)
+# -----------------------------
+**/dist/
+**/build/
+**/out/
+**/.cache/
+**/coverage/
+
+# -----------------------------
+# Node.js
+# -----------------------------
+**/node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# -----------------------------
+# Java / Maven / Gradle
+# -----------------------------
+**/target/
+**/.mvn/timing.properties
+.m2/
+**/.gradle/
+
+# -----------------------------
+# Docker / local infra state
+# -----------------------------
+*.pid
+tmp/
+temp/

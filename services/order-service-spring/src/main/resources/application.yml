@@ -1,0 +1,23 @@
+server:
+  port: ${ORDER_SERVICE_PORT:8081}
+
+spring:
+  application:
+    name: order-service
+  datasource:
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:eventify}
+    username: ${DB_USER:app}
+    password: ${DB_PASS:app}
+  jpa:
+    hibernate:
+      ddl-auto: update
+    open-in-view: false
+    properties:
+      hibernate:
+        format_sql: true
+
+app:
+  kafka:
+    brokers: ${KAFKA_BROKERS:localhost:9092}
+  outbox:
+    poll-interval-ms: 3000

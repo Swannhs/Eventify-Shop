@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ShipmentCreated",
+  "type": "object",
+  "required": ["eventId", "eventType", "occurredAt", "correlationId", "producer", "version", "payload"],
+  "properties": {
+    "eventId": { "type": "string", "format": "uuid" },
+    "eventType": { "const": "ShipmentCreated" },
+    "occurredAt": { "type": "string", "format": "date-time" },
+    "correlationId": { "type": "string", "format": "uuid" },
+    "producer": { "type": "string" },
+    "version": { "type": "integer", "minimum": 1 },
+    "payload": {
+      "type": "object",
+      "required": ["orderId", "shipmentId", "status"],
+      "properties": {
+        "orderId": { "type": "string", "format": "uuid" },
+        "shipmentId": { "type": "string", "format": "uuid" },
+        "status": { "type": "string", "enum": ["CREATED"] }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}
