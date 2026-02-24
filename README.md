@@ -14,8 +14,10 @@ Implemented in this repository:
 - `services/payment-service-laravel`: Laravel payment processor + Kafka adapter (`orders.events` -> `payments.events`)
 - `services/order-orchestrator-nest`: event-driven order orchestrator consuming inventory/payment outcomes
 - `services/shipping-service-express-ts`: Express + TypeScript shipping service consuming lifecycle events
+- `services/read-model-laravel`: Laravel CQRS read projections + Kafka adapter (`orders.events`, `order.lifecycle.events`, `shipping.events`)
+- `services/notification-service-express-ts`: Express + TypeScript notification mock consumer (`order.lifecycle.events`, `shipping.events`)
 
-Planned next: notifications, read-model, and web app.
+Planned next: notifications and web app.
 
 ## Architecture Principles
 
@@ -63,6 +65,8 @@ services/
   payment-service-laravel/
   order-orchestrator-nest/
   shipping-service-express-ts/
+  read-model-laravel/
+  notification-service-express-ts/
 ```
 
 ## Prerequisites
@@ -90,6 +94,8 @@ Default values:
 - `DB_NAME=eventify`
 - `ORDER_SERVICE_PORT=8081`
 - `SHIPPING_SERVICE_PORT=8084`
+- `PAYMENT_SERVICE_PORT=8085`
+- `READ_MODEL_SERVICE_PORT=8086`
 
 ## Local Dev Script
 
@@ -111,6 +117,8 @@ Useful commands:
 ./dev-local.sh logs orchestrator
 ./dev-local.sh logs shipping
 ./dev-local.sh logs payment
+./dev-local.sh logs read-model
+./dev-local.sh logs notification
 ./dev-local.sh restart
 ./dev-local.sh down
 ```
@@ -127,6 +135,8 @@ Verify:
 docker compose -f infra/docker-compose.yml ps
 curl -sS http://localhost:8082/health
 curl -sS http://localhost:8084/health
+curl -sS http://localhost:8086/api/health
+curl -sS http://localhost:8087/health
 docker exec eventify-kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list | sort
 ```
 
@@ -140,6 +150,8 @@ Expected:
 - Payment service API on `localhost:8085` and `payment-adapter` Kafka consumer running in Docker
 - Order orchestrator on `localhost:8082`
 - Shipping service on `localhost:8084`
+- Read model API on `localhost:8086` and `read-model-adapter` Kafka consumer running in Docker
+- Notification service on `localhost:8087`
 - required topics are listed (`orders.events`, `inventory.events`, `payments.events`, `order.lifecycle.events`, `shipping.events`, `payments.dlq`, `inventory.dlq`)
 
 Stop everything:
@@ -286,6 +298,33 @@ Expected:
 - No second `ShipmentCreated` event is produced for that `eventId`
 - `shipping.events` still has exactly one shipment event for that replayed `eventId`
 
+7. Verify read model projections and API.
+
+For an existing order lifecycle, query projections:
+
+```bash
+curl -sS http://localhost:8086/api/orders
+curl -sS http://localhost:8086/api/orders/33333333-3333-3333-3333-333333333333
+```
+
+Expected:
+
+- `GET /api/orders` returns entries from `orders_view`
+- `GET /api/orders/:id` returns `order` and associated `shipments`
+- Re-sending an already processed event (`same eventId`) does not duplicate projection updates
+
+8. Verify notification service consumes lifecycle and shipping events.
+
+```bash
+curl -sS http://localhost:8087/notifications
+```
+
+Expected:
+
+- Contains notification records for `OrderConfirmed`, `OrderCancelled`, and `ShipmentCreated` events
+- Every record includes `eventType`, `correlationId`, and `orderId`
+- Re-sending an already processed event (`same eventId`) is skipped by idempotency table `notification_processed_events`
+
 ## Local Checks Run
 
 The following were run for this state:
@@ -294,14 +333,19 @@ The following were run for this state:
 - `mvn -Dmaven.repo.local=/workspaces/Eventify-Shop/.m2/repository test` in `services/order-service-spring`
 - `mvn -Dmaven.repo.local=/workspaces/Eventify-Shop/.m2/repository test` in `services/inventory-service-spring`
 - `php artisan test` in `services/payment-service-laravel`
+- `php artisan test` in `services/read-model-laravel`
 - `npm install --no-audit --no-fund`
 - `npm run typecheck`
 - `npm run build` in `services/shipping-service-express-ts`
+- `npm run typecheck`
+- `npm run build` in `services/notification-service-express-ts`
 
 ## Notes
 
 - Inventory service reads consumer group from `KAFKA_GROUP_ID` (default: `inventory-service`) and publishes poison events to `inventory.dlq`.
 - Payment service uses an adapter pattern: Node `payment-adapter` handles Kafka I/O and calls Laravel endpoint `/api/internal/payments/process-order-placed` for idempotent payment decisions.
+- Read model service uses an adapter pattern: Node `read-model-adapter` consumes `orders.events`, `order.lifecycle.events`, and `shipping.events` then applies projections through `/api/internal/projections/apply`.
+- Notification service consumes `order.lifecycle.events` and `shipping.events`, logs correlation data, and exposes in-memory recent notifications via `GET /notifications`.
 - Shipping service reads consumer group from `SHIPPING_KAFKA_GROUP_ID` (default: `shipping-service-group`).
 - Orchestrator reads consumer group from `KAFKA_GROUP_ID` (default: `order-orchestrator`).
 - Order service currently uses JPA `ddl-auto=update`; migrations can be added next.

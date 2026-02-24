@@ -55,12 +55,18 @@ show_logs() {
     payment)
       dc logs -f --tail=100 payment-service payment-adapter
       ;;
+    read-model)
+      dc logs -f --tail=100 read-model-service read-model-adapter
+      ;;
+    notification)
+      dc logs -f --tail=100 notification-service
+      ;;
     all)
       dc logs -f --tail=100
       ;;
     *)
       echo "Unknown log target: $target"
-      echo "Usage: $0 logs [order|inventory|orchestrator|shipping|payment|all]"
+      echo "Usage: $0 logs [order|inventory|orchestrator|shipping|payment|read-model|notification|all]"
       exit 1
       ;;
   esac
@@ -75,7 +81,7 @@ Commands:
   down               Stop all Docker services
   restart            Restart all Docker services
   status             Show Docker service status
-  logs [target]      Stream logs (target: order|inventory|orchestrator|shipping|payment|all)
+  logs [target]      Stream logs (target: order|inventory|orchestrator|shipping|payment|read-model|notification|all)
 USAGE
 }
 

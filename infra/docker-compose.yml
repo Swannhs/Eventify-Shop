@@ -217,5 +217,67 @@ services:
       payment-service:
         condition: service_started
 
+  read-model-service:
+    build:
+      context: ../services/read-model-laravel
+      dockerfile: Dockerfile
+    container_name: eventify-read-model-service
+    environment:
+      APP_ENV: local
+      APP_DEBUG: "true"
+      APP_KEY: base64:4nP8gqv7dH5Vrf4xxtfM4gyjDLQHC7HhBtw8mUK7L48=
+      LOG_CHANNEL: stderr
+      DB_CONNECTION: pgsql
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_DATABASE: eventify
+      DB_USERNAME: app
+      DB_PASSWORD: app
+      DB_SCHEMA: read_model
+      READ_MODEL_SERVICE_PORT: 8086
+    ports:
+      - "8086:8086"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  read-model-adapter:
+    build:
+      context: ../services/read-model-laravel/adapter
+      dockerfile: Dockerfile
+    container_name: eventify-read-model-adapter
+    environment:
+      KAFKA_BROKERS: kafka:29092
+      KAFKA_GROUP_ID: read-model-service
+      READ_MODEL_API_URL: http://read-model-service:8086/api/internal/projections/apply
+    depends_on:
+      kafka:
+        condition: service_healthy
+      read-model-service:
+        condition: service_started
+
+  notification-service:
+    build:
+      context: ../services/notification-service-express-ts
+      dockerfile: Dockerfile
+    container_name: eventify-notification-service
+    environment:
+      KAFKA_BROKERS: kafka:29092
+      KAFKA_GROUP_ID: notification-service
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: app
+      DB_PASS: app
+      DB_NAME: eventify
+      NOTIFICATION_SERVICE_PORT: 8087
+      NOTIFICATIONS_MAX: 200
+    ports:
+      - "8087:8087"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+
 volumes:
   postgres_data:
