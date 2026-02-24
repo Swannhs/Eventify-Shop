@@ -10,10 +10,11 @@ Implemented in this repository:
 - `contracts/event-envelope.json`: standard event envelope schema
 - `contracts/events/*.json`: per-event schemas
 - `services/order-service-spring`: Spring Boot order service with Outbox pattern (`POST /orders`)
+- `services/inventory-service-spring`: Spring Boot inventory reservation consumer (`orders.events` -> `inventory.events`)
 - `services/order-orchestrator-nest`: event-driven order orchestrator consuming inventory/payment outcomes
 - `services/shipping-service-express-ts`: Express + TypeScript shipping service consuming lifecycle events
 
-Planned next: inventory, payment, notifications, read-model, and web app.
+Planned next: payment, notifications, read-model, and web app.
 
 ## Architecture Principles
 
@@ -57,6 +58,8 @@ contracts/
   events/*.json
 services/
   order-service-spring/
+  inventory-service-spring/
+  order-orchestrator-nest/
   shipping-service-express-ts/
 ```
 
@@ -102,6 +105,7 @@ Useful commands:
 ./dev-local.sh status
 ./dev-local.sh logs all
 ./dev-local.sh logs order
+./dev-local.sh logs inventory
 ./dev-local.sh logs orchestrator
 ./dev-local.sh logs shipping
 ./dev-local.sh restart
@@ -129,6 +133,7 @@ Expected:
 - Kafka UI on `http://localhost:8080`
 - Postgres on `localhost:5432`
 - Order service on `localhost:8081`
+- Inventory service running as Kafka consumer (no HTTP port exposed)
 - Order orchestrator on `localhost:8082`
 - Shipping service on `localhost:8084`
 - required topics are listed (`orders.events`, `inventory.events`, `payments.events`, `order.lifecycle.events`, `shipping.events`, `payments.dlq`, `inventory.dlq`)
@@ -186,7 +191,41 @@ Expected:
 - `orders.status` for that `orderId` becomes `CONFIRMED` in Postgres
 - Duplicate input `eventId` values are ignored by orchestrator idempotency (`processed_events`)
 
-3. Verify cancellation path.
+3. Verify inventory outcomes and idempotency from `OrderPlaced`.
+
+Publish `OrderPlaced` with stock available:
+
+```bash
+docker exec -i eventify-kafka /opt/kafka/bin/kafka-console-producer.sh \
+  --bootstrap-server localhost:9092 \
+  --topic orders.events <<'EOF'
+{"eventId":"44444444-4444-4444-4444-444444444444","eventType":"OrderPlaced","occurredAt":"2026-01-01T00:00:00Z","correlationId":"55555555-5555-5555-5555-555555555555","producer":"order-service","version":1,"payload":{"orderId":"66666666-6666-6666-6666-666666666666","items":[{"sku":"SKU-RED-TSHIRT","quantity":2}]}}
+EOF
+```
+
+Expected:
+
+- Inventory service publishes `InventoryReserved` on `inventory.events`
+
+Publish `OrderPlaced` with insufficient stock:
+
+```bash
+docker exec -i eventify-kafka /opt/kafka/bin/kafka-console-producer.sh \
+  --bootstrap-server localhost:9092 \
+  --topic orders.events <<'EOF'
+{"eventId":"77777777-7777-7777-7777-777777777777","eventType":"OrderPlaced","occurredAt":"2026-01-01T00:01:00Z","correlationId":"88888888-8888-8888-8888-888888888888","producer":"order-service","version":1,"payload":{"orderId":"99999999-9999-9999-9999-999999999999","items":[{"sku":"SKU-GREEN-HOODIE","quantity":1}]}}
+EOF
+```
+
+Expected:
+
+- Inventory service publishes `OutOfStock` on `inventory.events`
+
+Re-send the first event with same `eventId=44444444-4444-4444-4444-444444444444`:
+
+- Inventory service skips it and does not reserve stock twice.
+
+4. Verify cancellation path.
 
 Publish either `OutOfStock` or `PaymentFailed` for another `orderId`.
 
@@ -195,7 +234,7 @@ Expected:
 - Orchestrator publishes `OrderCancelled` to `order.lifecycle.events`
 - `orders.status` for that `orderId` becomes `CANCELLED`
 
-4. Prove shipping idempotency survives restart.
+5. Prove shipping idempotency survives restart.
 
 Restart shipping service and publish the exact same `OrderConfirmed` event again (same `eventId`):
 
@@ -218,12 +257,14 @@ The following were run for this state:
 
 - `docker compose -f infra/docker-compose.yml config`
 - `mvn -Dmaven.repo.local=/workspaces/Eventify-Shop/.m2/repository test` in `services/order-service-spring`
+- `mvn -Dmaven.repo.local=/workspaces/Eventify-Shop/.m2/repository test` in `services/inventory-service-spring`
 - `npm install --no-audit --no-fund`
 - `npm run typecheck`
 - `npm run build` in `services/shipping-service-express-ts`
 
 ## Notes
 
+- Inventory service reads consumer group from `KAFKA_GROUP_ID` (default: `inventory-service`) and publishes poison events to `inventory.dlq`.
 - Shipping service reads consumer group from `SHIPPING_KAFKA_GROUP_ID` (default: `shipping-service-group`).
 - Orchestrator reads consumer group from `KAFKA_GROUP_ID` (default: `order-orchestrator`).
 - Order service currently uses JPA `ddl-auto=update`; migrations can be added next.

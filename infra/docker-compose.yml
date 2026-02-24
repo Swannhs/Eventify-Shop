@@ -134,6 +134,25 @@ services:
       kafka:
         condition: service_healthy
 
+  inventory-service:
+    build:
+      context: ../services/inventory-service-spring
+      dockerfile: Dockerfile
+    container_name: eventify-inventory-service
+    environment:
+      KAFKA_BROKERS: kafka:29092
+      KAFKA_GROUP_ID: inventory-service
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: app
+      DB_PASS: app
+      DB_NAME: eventify
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+
   shipping-service:
     build:
       context: ../services/shipping-service-express-ts

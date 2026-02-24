@@ -8,9 +8,11 @@ MAVEN_REPO_DIR="$ROOT_DIR/.m2/repository"
 ORDER_PID_FILE="$STATE_DIR/order-service.pid"
 ORCHESTRATOR_PID_FILE="$STATE_DIR/order-orchestrator.pid"
 SHIPPING_PID_FILE="$STATE_DIR/shipping-service.pid"
+INVENTORY_PID_FILE="$STATE_DIR/inventory-service.pid"
 ORDER_LOG="$STATE_DIR/order-service.log"
 ORCHESTRATOR_LOG="$STATE_DIR/order-orchestrator.log"
 SHIPPING_LOG="$STATE_DIR/shipping-service.log"
+INVENTORY_LOG="$STATE_DIR/inventory-service.log"
 
 mkdir -p "$STATE_DIR"
 mkdir -p "$MAVEN_REPO_DIR"
@@ -120,6 +122,21 @@ start_shipping_service() {
   echo "shipping-service started. Log: $SHIPPING_LOG"
 }
 
+start_inventory_service() {
+  if [[ -f "$INVENTORY_PID_FILE" ]] && is_pid_running "$(cat "$INVENTORY_PID_FILE")"; then
+    echo "inventory-service already running (pid=$(cat "$INVENTORY_PID_FILE"))."
+    return
+  fi
+
+  require_cmd mvn
+  echo "Starting inventory-service (Spring Boot Kafka consumer)..."
+  local pid
+  pid="$(start_detached "$INVENTORY_LOG" bash -lc "cd \"$ROOT_DIR/services/inventory-service-spring\" && exec env KAFKA_GROUP_ID=inventory-service mvn -Dmaven.repo.local=\"$MAVEN_REPO_DIR\" spring-boot:run")"
+
+  echo "$pid" >"$INVENTORY_PID_FILE"
+  echo "inventory-service started. Log: $INVENTORY_LOG"
+}
+
 start_orchestrator_service() {
   if [[ -f "$ORCHESTRATOR_PID_FILE" ]] && is_pid_running "$(cat "$ORCHESTRATOR_PID_FILE")"; then
     echo "order-orchestrator already running (pid=$(cat "$ORCHESTRATOR_PID_FILE"))."
@@ -147,6 +164,7 @@ start_all() {
   docker compose -f "$COMPOSE_FILE" up -d --remove-orphans
   ensure_kafka_topics
   start_order_service
+  start_inventory_service
   start_orchestrator_service
   start_shipping_service
   echo
@@ -155,6 +173,7 @@ start_all() {
 
 stop_all() {
   stop_pid_file "$ORDER_PID_FILE" "order-service"
+  stop_pid_file "$INVENTORY_PID_FILE" "inventory-service"
   stop_pid_file "$ORCHESTRATOR_PID_FILE" "order-orchestrator"
   stop_pid_file "$SHIPPING_PID_FILE" "shipping-service"
 
@@ -182,6 +201,12 @@ status() {
     echo "order-orchestrator: stopped"
   fi
 
+  if [[ -f "$INVENTORY_PID_FILE" ]] && is_pid_running "$(cat "$INVENTORY_PID_FILE")"; then
+    echo "inventory-service: running (pid=$(cat "$INVENTORY_PID_FILE"))"
+  else
+    echo "inventory-service: stopped"
+  fi
+
   if [[ -f "$SHIPPING_PID_FILE" ]] && is_pid_running "$(cat "$SHIPPING_PID_FILE")"; then
     echo "shipping-service: running (pid=$(cat "$SHIPPING_PID_FILE"))"
   else
@@ -191,6 +216,7 @@ status() {
   echo
   echo "Logs:"
   echo "- $ORDER_LOG"
+  echo "- $INVENTORY_LOG"
   echo "- $ORCHESTRATOR_LOG"
   echo "- $SHIPPING_LOG"
 }
@@ -204,9 +230,15 @@ show_logs() {
     shipping)
       tail -n 100 -f "$SHIPPING_LOG"
       ;;
+    inventory)
+      tail -n 100 -f "$INVENTORY_LOG"
+      ;;
     all)
       echo "---- order-service ----"
       tail -n 80 "$ORDER_LOG" 2>/dev/null || true
+      echo
+      echo "---- inventory-service ----"
+      tail -n 80 "$INVENTORY_LOG" 2>/dev/null || true
       echo
       echo "---- order-orchestrator ----"
       tail -n 80 "$ORCHESTRATOR_LOG" 2>/dev/null || true
@@ -219,7 +251,7 @@ show_logs() {
       ;;
     *)
       echo "Unknown log target: $target"
-      echo "Usage: $0 logs [order|shipping|all]"
+      echo "Usage: $0 logs [order|inventory|orchestrator|shipping|all]"
       exit 1
       ;;
   esac
@@ -230,11 +262,11 @@ usage() {
 Usage: ./dev-local.sh <command>
 
 Commands:
-  up                 Start infra + order-service + order-orchestrator + shipping-service
+  up                 Start infra + order-service + inventory-service + order-orchestrator + shipping-service
   down               Stop local services + infra
   restart            Restart everything
   status             Show infra and local process status
-  logs [target]      Show logs (target: order|orchestrator|shipping|all)
+  logs [target]      Show logs (target: order|inventory|orchestrator|shipping|all)
 USAGE
 }
 
