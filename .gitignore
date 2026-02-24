@@ -52,5 +52,6 @@ pnpm-debug.log*
 # Docker / local infra state
 # -----------------------------
 *.pid
+.dev-local/
 tmp/
 temp/

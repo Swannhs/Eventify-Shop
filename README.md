@@ -85,6 +85,27 @@ Default values:
 - `ORDER_SERVICE_PORT=8081`
 - `SHIPPING_SERVICE_PORT=8084`
 
+## Local Dev Script
+
+Use the root helper script to run everything locally:
+
+```bash
+./dev-local.sh up
+```
+
+This script also ensures all required Kafka topics exist before starting services.
+
+Useful commands:
+
+```bash
+./dev-local.sh status
+./dev-local.sh logs all
+./dev-local.sh logs order
+./dev-local.sh logs shipping
+./dev-local.sh restart
+./dev-local.sh down
+```
+
 ## Start Infra
 
 ```bash
@@ -95,7 +116,7 @@ Verify:
 
 ```bash
 docker compose -f infra/docker-compose.yml ps
-docker compose -f infra/docker-compose.yml logs kafka-init
+docker exec eventify-kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list
 ```
 
 Expected:
@@ -103,7 +124,7 @@ Expected:
 - Kafka running on `localhost:9092`
 - Kafka UI on `http://localhost:8080`
 - Postgres on `localhost:5432`
-- `kafka-init` logs include created/listed required topics
+- required topics are listed (`orders.events`, `inventory.events`, `payments.events`, `order.lifecycle.events`, `shipping.events`, `payments.dlq`, `inventory.dlq`)
 
 ## Run Services
 
