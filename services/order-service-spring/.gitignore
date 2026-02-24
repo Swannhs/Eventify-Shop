@@ -1,0 +1,12 @@
+# Maven / Java build output
+target/
+
+# Local Maven wrapper timing data
+.mvn/timing.properties
+
+# IDE files
+.idea/
+*.iml
+
+# Logs
+*.log

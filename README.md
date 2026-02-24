@@ -1,129 +1,168 @@
 # Eventify Commerce
 
-Eventify Commerce is a production-style, event-driven microservices system built to demonstrate how modern distributed e-commerce workflows are designed in practice.
+Production-style Event-Driven Architecture (EDA) demo for e-commerce workflows.
 
-It focuses on asynchronous communication, eventual consistency, and resilient processing using Kafka with proven architecture patterns such as Saga orchestration, Outbox, and CQRS.
+## Current Scope
 
-## Architecture Overview
+Implemented in this repository:
 
-This project follows Event-Driven Architecture (EDA) principles:
+- `infra/docker-compose.yml`: Kafka, Kafka UI, PostgreSQL, and required topic initialization
+- `contracts/event-envelope.json`: standard event envelope schema
+- `contracts/events/*.json`: per-event schemas
+- `services/order-service-spring`: Spring Boot order service with Outbox pattern (`POST /orders`)
+- `services/shipping-service-express-ts`: Express + TypeScript shipping service consuming lifecycle events
 
-- Services communicate through domain events
-- No direct service-to-service HTTP coupling for core workflows
-- Asynchronous processing via Kafka
-- Eventual consistency across bounded contexts
-- Fault tolerance through retries, idempotency, and DLQ
+Planned next: orchestrator, inventory, payment, notifications, read-model, and web app.
 
-## Core Workflow
+## Architecture Principles
 
-1. Customer places an order -> `OrderPlaced`
-2. Inventory service reserves stock -> `InventoryReserved` or `OutOfStock`
-3. Payment service processes payment -> `PaymentSucceeded` or `PaymentFailed`
-4. Order orchestrator resolves final state -> `OrderConfirmed` or `OrderCancelled`
-5. Shipping service creates shipment -> `ShipmentCreated`
-6. Notification service reacts to lifecycle events
-7. Read model updates projections for the UI
+- Event-first communication via Kafka topics
+- No direct synchronous coupling in the order workflow
+- Eventual consistency
+- Outbox pattern to avoid dual writes
+- Idempotent consumers (shipping service tracks processed event IDs in-memory for now)
 
-## Tech Stack
+## Required Event Envelope
 
-### Backend Services
+All events follow:
 
-- NestJS (Node.js / TypeScript): Order, Orchestrator, Shipping, Notification
-- Spring Boot (Java): Inventory
-- Laravel (PHP): Payment + Read Model Projection
-- Kafka: Event streaming platform
-- PostgreSQL: service-specific data stores
+- `eventId` (uuid)
+- `eventType` (string)
+- `occurredAt` (ISO timestamp)
+- `correlationId` (uuid)
+- `producer` (service name)
+- `version` (integer)
+- `payload` (object)
 
-### Frontend
+Schema file: `contracts/event-envelope.json`
 
-- Next.js (TypeScript): UI consuming CQRS read model APIs
+## Topics
 
-### Infrastructure
+- `orders.events`
+- `inventory.events`
+- `payments.events`
+- `order.lifecycle.events`
+- `shipping.events`
+- `payments.dlq`
+- `inventory.dlq`
 
-- Docker + Docker Compose
-- Kafka UI
-- Domain-oriented topic organization
-
-## Architectural Patterns Implemented
-
-- Event-Driven Architecture: immutable domain events between services
-- Outbox Pattern: atomic state change + event publication safety
-- Saga Orchestration: coordinated order lifecycle across services
-- CQRS: write-side workflows separated from read-optimized projections
-- Idempotent Consumers: safe duplicate event handling
-- Dead Letter Queues (DLQ): failed event routing and recovery
-- Event Versioning: schema evolution support
-- Observability: correlation IDs and structured logs
-
-## Event Envelope (Standard Metadata)
-
-Every event includes:
-
-- `eventId`
-- `eventType`
-- `correlationId`
-- `producer`
-- `version`
-- `occurredAt`
-
-## Services
-
-- Order Service (NestJS): `POST /orders`, persists orders, writes outbox, emits `OrderPlaced`
-- Inventory Service (Spring Boot): consumes `OrderPlaced`, reserves stock, emits inventory result events
-- Payment Service (Laravel): consumes `OrderPlaced`, simulates payment gateway, emits payment outcomes
-- Order Orchestrator (NestJS): consumes payment/inventory events, manages order state machine
-- Shipping Service (NestJS): consumes `OrderConfirmed`, emits `ShipmentCreated`
-- Notification Service (NestJS): reacts to lifecycle events and sends mock notifications
-- Read Model Service (Laravel): builds query-optimized projections for UI
-- Web App (Next.js): visualizes order lifecycle and eventual consistency states
-
-## Example Event Flow
+## Repository Layout
 
 ```text
-OrderPlaced
-  -> InventoryReserved
-  -> PaymentSucceeded
-  -> OrderConfirmed
-  -> ShipmentCreated
+infra/
+  docker-compose.yml
+contracts/
+  event-envelope.json
+  events/*.json
+services/
+  order-service-spring/
+  shipping-service-express-ts/
 ```
 
-## Learning Objectives
+## Prerequisites
 
-- Design scalable event-driven systems
-- Implement distributed workflows without 2PC
-- Handle eventual consistency correctly
-- Prevent dual-write issues with Outbox
-- Build reliable consumers with retries and idempotency
-- Coordinate polyglot microservices via event contracts
+- Docker + Docker Compose
+- Java 17+ (project compiles with release 17)
+- Maven
+- Node.js 20+ and npm
 
-## Running the Project
+## Environment
 
-This project is intended to run through Docker Compose with:
+Copy defaults from `.env.example`:
 
-- Kafka cluster
-- Kafka UI
-- PostgreSQL
-- All microservices
+```bash
+cp .env.example .env
+```
 
-Each service is independently deployable and loosely coupled.
+Default values:
 
-> Setup scripts and service bootstrapping are being added incrementally.
+- `KAFKA_BROKERS=localhost:9092`
+- `DB_HOST=localhost`
+- `DB_PORT=5432`
+- `DB_USER=app`
+- `DB_PASS=app`
+- `DB_NAME=eventify`
+- `ORDER_SERVICE_PORT=8081`
+- `SHIPPING_SERVICE_PORT=8084`
 
-## Roadmap
+## Start Infra
 
-- Schema Registry + Avro/Protobuf
-- Exactly-once processing strategy
-- Kubernetes deployment manifests
-- OpenTelemetry distributed tracing
-- Real-time UI updates via WebSockets
-- Event sourcing experiment for the Order domain
-- Kafka Streams analytics pipeline
+```bash
+docker compose -f infra/docker-compose.yml up -d
+```
 
-## Why This Project
+Verify:
 
-Most microservice demos stop at CRUD + REST.
-Eventify Commerce is intentionally focused on reliability patterns used in real distributed systems where correctness and recoverability matter.
+```bash
+docker compose -f infra/docker-compose.yml ps
+docker compose -f infra/docker-compose.yml logs kafka-init
+```
 
-## Author
+Expected:
 
-Built as a deep-dive project to master Event-Driven Architecture, Kafka, and production-grade distributed system design.
+- Kafka running on `localhost:9092`
+- Kafka UI on `http://localhost:8080`
+- Postgres on `localhost:5432`
+- `kafka-init` logs include created/listed required topics
+
+## Run Services
+
+Order Service (Spring Boot):
+
+```bash
+cd services/order-service-spring
+mvn spring-boot:run
+```
+
+Shipping Service (Express + TS):
+
+```bash
+cd services/shipping-service-express-ts
+npm install
+npm run dev
+```
+
+## Manual Verification Path
+
+1. Create an order and confirm outbox event emission.
+
+```bash
+curl -i -X POST http://localhost:8081/orders \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "customerId":"c-1001",
+    "items":[
+      {"sku":"SKU-RED-TSHIRT","quantity":2},
+      {"sku":"SKU-BLUE-CAP","quantity":1}
+    ]
+  }'
+```
+
+Expected:
+
+- HTTP `201` from order service
+- Message appears in Kafka UI topic `orders.events` with `eventType=OrderPlaced`
+
+2. Simulate lifecycle confirmation and verify shipping emits `ShipmentCreated`.
+
+Publish an `OrderConfirmed` message in Kafka UI to topic `order.lifecycle.events` (or via CLI producer), then check `shipping.events`.
+
+Expected:
+
+- A `ShipmentCreated` event is published
+- Duplicate `eventId` is ignored by shipping consumer idempotency set
+
+## Local Checks Run
+
+The following were run for this state:
+
+- `docker compose -f infra/docker-compose.yml config`
+- `mvn -Dmaven.repo.local=/workspaces/Eventify-Shop/.m2/repository test` in `services/order-service-spring`
+- `npm install --no-audit --no-fund`
+- `npm run typecheck`
+- `npm run build` in `services/shipping-service-express-ts`
+
+## Notes
+
+- Shipping idempotency is currently in-memory; move to persistent store for production behavior.
+- Order service currently uses JPA `ddl-auto=update`; migrations can be added next.
