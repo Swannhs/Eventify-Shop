@@ -11,10 +11,11 @@ Implemented in this repository:
 - `contracts/events/*.json`: per-event schemas
 - `services/order-service-spring`: Spring Boot order service with Outbox pattern (`POST /orders`)
 - `services/inventory-service-spring`: Spring Boot inventory reservation consumer (`orders.events` -> `inventory.events`)
+- `services/payment-service-laravel`: Laravel payment processor + Kafka adapter (`orders.events` -> `payments.events`)
 - `services/order-orchestrator-nest`: event-driven order orchestrator consuming inventory/payment outcomes
 - `services/shipping-service-express-ts`: Express + TypeScript shipping service consuming lifecycle events
 
-Planned next: payment, notifications, read-model, and web app.
+Planned next: notifications, read-model, and web app.
 
 ## Architecture Principles
 
@@ -59,6 +60,7 @@ contracts/
 services/
   order-service-spring/
   inventory-service-spring/
+  payment-service-laravel/
   order-orchestrator-nest/
   shipping-service-express-ts/
 ```
@@ -97,7 +99,7 @@ Use the root helper script to run everything locally:
 ./dev-local.sh up
 ```
 
-This script also ensures all required Kafka topics exist before starting services.
+This script runs the full Docker stack (including topic initialization and all services).
 
 Useful commands:
 
@@ -108,6 +110,7 @@ Useful commands:
 ./dev-local.sh logs inventory
 ./dev-local.sh logs orchestrator
 ./dev-local.sh logs shipping
+./dev-local.sh logs payment
 ./dev-local.sh restart
 ./dev-local.sh down
 ```
@@ -134,6 +137,7 @@ Expected:
 - Postgres on `localhost:5432`
 - Order service on `localhost:8081`
 - Inventory service running as Kafka consumer (no HTTP port exposed)
+- Payment service API on `localhost:8085` and `payment-adapter` Kafka consumer running in Docker
 - Order orchestrator on `localhost:8082`
 - Shipping service on `localhost:8084`
 - required topics are listed (`orders.events`, `inventory.events`, `payments.events`, `order.lifecycle.events`, `shipping.events`, `payments.dlq`, `inventory.dlq`)
@@ -225,7 +229,38 @@ Re-send the first event with same `eventId=44444444-4444-4444-4444-444444444444`
 
 - Inventory service skips it and does not reserve stock twice.
 
-4. Verify cancellation path.
+4. Verify payment service success/failure and DLQ behavior.
+
+Normal payment (`PaymentSucceeded`) using default event:
+
+- Publish `OrderPlaced` with no force flags.
+- Expect `PaymentSucceeded` in `payments.events`.
+
+Forced business failure (`PaymentFailed`):
+
+```bash
+docker exec -i eventify-kafka /opt/kafka/bin/kafka-console-producer.sh \
+  --bootstrap-server localhost:9092 \
+  --topic orders.events <<'EOF'
+{"eventId":"aaaaaaaa-1111-2222-3333-bbbbbbbbbbbb","eventType":"OrderPlaced","occurredAt":"2026-01-01T00:03:00Z","correlationId":"cccccccc-1111-2222-3333-dddddddddddd","producer":"order-service","version":1,"payload":{"orderId":"eeeeeeee-1111-2222-3333-ffffffffffff","forcePaymentFailed":true,"items":[{"sku":"SKU-RED-TSHIRT","quantity":1}]}}
+EOF
+```
+
+Expect `PaymentFailed` in `payments.events`.
+
+Forced transient exception -> retries -> DLQ:
+
+```bash
+docker exec -i eventify-kafka /opt/kafka/bin/kafka-console-producer.sh \
+  --bootstrap-server localhost:9092 \
+  --topic orders.events <<'EOF'
+{"eventId":"bbbbbbbb-1111-2222-3333-cccccccccccc","eventType":"OrderPlaced","occurredAt":"2026-01-01T00:04:00Z","correlationId":"dddddddd-1111-2222-3333-eeeeeeeeeeee","producer":"order-service","version":1,"payload":{"orderId":"ffffffff-1111-2222-3333-aaaaaaaaaaaa","forceException":true,"items":[{"sku":"SKU-RED-TSHIRT","quantity":1}]}}
+EOF
+```
+
+Expect message published to `payments.dlq` after retries.
+
+5. Verify cancellation path.
 
 Publish either `OutOfStock` or `PaymentFailed` for another `orderId`.
 
@@ -234,7 +269,7 @@ Expected:
 - Orchestrator publishes `OrderCancelled` to `order.lifecycle.events`
 - `orders.status` for that `orderId` becomes `CANCELLED`
 
-5. Prove shipping idempotency survives restart.
+6. Prove shipping idempotency survives restart.
 
 Restart shipping service and publish the exact same `OrderConfirmed` event again (same `eventId`):
 
@@ -258,6 +293,7 @@ The following were run for this state:
 - `docker compose -f infra/docker-compose.yml config`
 - `mvn -Dmaven.repo.local=/workspaces/Eventify-Shop/.m2/repository test` in `services/order-service-spring`
 - `mvn -Dmaven.repo.local=/workspaces/Eventify-Shop/.m2/repository test` in `services/inventory-service-spring`
+- `php artisan test` in `services/payment-service-laravel`
 - `npm install --no-audit --no-fund`
 - `npm run typecheck`
 - `npm run build` in `services/shipping-service-express-ts`
@@ -265,6 +301,7 @@ The following were run for this state:
 ## Notes
 
 - Inventory service reads consumer group from `KAFKA_GROUP_ID` (default: `inventory-service`) and publishes poison events to `inventory.dlq`.
+- Payment service uses an adapter pattern: Node `payment-adapter` handles Kafka I/O and calls Laravel endpoint `/api/internal/payments/process-order-placed` for idempotent payment decisions.
 - Shipping service reads consumer group from `SHIPPING_KAFKA_GROUP_ID` (default: `shipping-service-group`).
 - Orchestrator reads consumer group from `KAFKA_GROUP_ID` (default: `order-orchestrator`).
 - Order service currently uses JPA `ddl-auto=update`; migrations can be added next.

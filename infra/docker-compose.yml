@@ -175,5 +175,47 @@ services:
       kafka:
         condition: service_healthy
 
+  payment-service:
+    build:
+      context: ../services/payment-service-laravel
+      dockerfile: Dockerfile
+    container_name: eventify-payment-service
+    environment:
+      APP_ENV: local
+      APP_DEBUG: "true"
+      APP_KEY: base64:4nP8gqv7dH5Vrf4xxtfM4gyjDLQHC7HhBtw8mUK7L48=
+      LOG_CHANNEL: stderr
+      DB_CONNECTION: pgsql
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_DATABASE: eventify
+      DB_USERNAME: app
+      DB_PASSWORD: app
+      DB_SCHEMA: payment
+      PAYMENT_FAIL_THRESHOLD: 1000
+      PAYMENT_SERVICE_PORT: 8085
+    ports:
+      - "8085:8085"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  payment-adapter:
+    build:
+      context: ../services/payment-service-laravel/adapter
+      dockerfile: Dockerfile
+    container_name: eventify-payment-adapter
+    environment:
+      KAFKA_BROKERS: kafka:29092
+      KAFKA_GROUP_ID: payment-service
+      PAYMENT_API_URL: http://payment-service:8085/api/internal/payments/process-order-placed
+      PAYMENT_RETRY_ATTEMPTS: 3
+      PAYMENT_RETRY_DELAY_MS: 500
+    depends_on:
+      kafka:
+        condition: service_healthy
+      payment-service:
+        condition: service_started
+
 volumes:
   postgres_data:
