@@ -2,12 +2,14 @@ package com.eventify.orderservice.outbox;
 
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
+import jakarta.persistence.EnumType;
+import jakarta.persistence.Enumerated;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 import java.time.OffsetDateTime;
 
 @Entity
-@Table(name = "outbox_events")
+@Table(name = "outbox")
 public class OutboxEventEntity {
 
     @Id
@@ -28,11 +30,12 @@ public class OutboxEventEntity {
     @Column(nullable = false)
     private OffsetDateTime createdAt;
 
+    @Enumerated(EnumType.STRING)
     @Column(nullable = false)
-    private boolean published;
+    private OutboxStatus status;
 
-    @Column
-    private OffsetDateTime publishedAt;
+    @Column(name = "sent_at")
+    private OffsetDateTime sentAt;
 
     protected OutboxEventEntity() {
     }
@@ -44,7 +47,7 @@ public class OutboxEventEntity {
         this.topic = topic;
         this.payload = payload;
         this.createdAt = createdAt;
-        this.published = false;
+        this.status = OutboxStatus.PENDING;
     }
 
     public String getId() {
@@ -67,12 +70,16 @@ public class OutboxEventEntity {
         return payload;
     }
 
-    public boolean isPublished() {
-        return published;
+    public OutboxStatus getStatus() {
+        return status;
     }
 
-    public void markPublished(OffsetDateTime at) {
-        this.published = true;
-        this.publishedAt = at;
+    public OffsetDateTime getSentAt() {
+        return sentAt;
+    }
+
+    public void markSent(OffsetDateTime at) {
+        this.status = OutboxStatus.SENT;
+        this.sentAt = at;
     }
 }

@@ -1,12 +1,22 @@
 import 'dotenv/config';
 import express from 'express';
 import { Kafka } from 'kafkajs';
+import { Pool } from 'pg';
 import { v4 as uuidv4 } from 'uuid';
 import { z } from 'zod';
 
 const app = express();
 const port = Number(process.env.SHIPPING_SERVICE_PORT ?? 8084);
 const brokers = (process.env.KAFKA_BROKERS ?? 'localhost:9092').split(',');
+const kafkaGroupId = process.env.KAFKA_GROUP_ID ?? 'shipping-service';
+
+const dbPool = new Pool({
+  host: process.env.DB_HOST ?? 'localhost',
+  port: Number(process.env.DB_PORT ?? 5432),
+  user: process.env.DB_USER ?? 'app',
+  password: process.env.DB_PASS ?? 'app',
+  database: process.env.DB_NAME ?? 'eventify'
+});
 
 const eventEnvelopeSchema = z.object({
   eventId: z.string().uuid(),
@@ -25,8 +35,6 @@ const orderConfirmedSchema = eventEnvelopeSchema.extend({
   })
 });
 
-const processedEventIds = new Set<string>();
-
 app.get('/health', (_req, res) => {
   res.status(200).json({ status: 'ok', service: 'shipping-service' });
 });
@@ -37,9 +45,30 @@ const kafka = new Kafka({
 });
 
 const producer = kafka.producer();
-const consumer = kafka.consumer({ groupId: 'shipping-service-group' });
+const consumer = kafka.consumer({ groupId: kafkaGroupId });
+
+async function initIdempotencyStore(): Promise<void> {
+  await dbPool.query(`
+    CREATE TABLE IF NOT EXISTS processed_events (
+      event_id UUID PRIMARY KEY,
+      processed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+}
+
+async function tryMarkEventAsProcessing(eventId: string): Promise<boolean> {
+  const result = await dbPool.query(
+    `INSERT INTO processed_events (event_id, processed_at)
+     VALUES ($1, NOW())
+     ON CONFLICT (event_id) DO NOTHING`,
+    [eventId]
+  );
+
+  return result.rowCount === 1;
+}
 
 async function startKafkaLoop(): Promise<void> {
+  await initIdempotencyStore();
   await producer.connect();
   await consumer.connect();
   await consumer.subscribe({ topic: 'order.lifecycle.events', fromBeginning: true });
@@ -63,12 +92,20 @@ async function startKafkaLoop(): Promise<void> {
         return;
       }
 
-      if (processedEventIds.has(envelope.data.eventId)) {
+      const confirmed = orderConfirmedSchema.safeParse(envelope.data);
+      if (!confirmed.success) {
         return;
       }
 
-      const confirmed = orderConfirmedSchema.safeParse(envelope.data);
-      if (!confirmed.success) {
+      console.log(
+        `[shipping-service] received eventId=${confirmed.data.eventId} correlationId=${confirmed.data.correlationId} eventType=${confirmed.data.eventType}`
+      );
+
+      const shouldProcess = await tryMarkEventAsProcessing(confirmed.data.eventId);
+      if (!shouldProcess) {
+        console.log(
+          `[shipping-service] duplicate ignored eventId=${confirmed.data.eventId} correlationId=${confirmed.data.correlationId}`
+        );
         return;
       }
 
@@ -96,8 +133,9 @@ async function startKafkaLoop(): Promise<void> {
         ]
       });
 
-      processedEventIds.add(envelope.data.eventId);
-      console.log(`ShipmentCreated published for order ${confirmed.data.payload.orderId}`);
+      console.log(
+        `[shipping-service] published ShipmentCreated orderId=${confirmed.data.payload.orderId} correlationId=${confirmed.data.correlationId}`
+      );
     }
   });
 }
