@@ -1,76 +1,29 @@
 import Link from 'next/link';
 import { useRouter } from 'next/router';
-import { useEffect, useState } from 'react';
-
-type Shipment = {
-  shipment_id: string;
-  order_id: string;
-  carrier: string;
-  status: string;
-  created_at: string;
-};
-
-type Order = {
-  order_id: string;
-  status: string;
-  total: number | null;
-  created_at: string;
-  updated_at: string;
-};
-
-type OrderDetailResponse = {
-  data: {
-    order: Order;
-    shipments: Shipment[];
-  };
-};
+import { useCallback } from 'react';
+import { ShipmentList } from '../../components/orders/ShipmentList';
+import { StateMessage } from '../../components/ui/StateMessage';
+import { useAsyncResource } from '../../hooks/useAsyncResource';
+import { getOrderDetail } from '../../lib/readModelClient';
 
 export default function OrderDetailPage() {
   const router = useRouter();
-  const orderId = router.query.id;
+  const orderId = typeof router.query.id === 'string' ? router.query.id : null;
 
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [order, setOrder] = useState<Order | null>(null);
-  const [shipments, setShipments] = useState<Shipment[]>([]);
-
-  useEffect(() => {
-    if (typeof orderId !== 'string') {
-      return;
-    }
-
-    let mounted = true;
-
-    async function loadOrder(): Promise<void> {
-      try {
-        setLoading(true);
-        const response = await fetch(`/api/orders/${orderId}`);
-        if (!response.ok) {
-          throw new Error(`Failed to load order (${response.status})`);
-        }
-
-        const body = (await response.json()) as OrderDetailResponse;
-        if (mounted) {
-          setOrder(body.data?.order ?? null);
-          setShipments(body.data?.shipments ?? []);
-          setError(null);
-        }
-      } catch (err) {
-        if (mounted) {
-          setError(err instanceof Error ? err.message : 'Unexpected error');
-        }
-      } finally {
-        if (mounted) {
-          setLoading(false);
-        }
+  const loadOrder = useCallback(
+    (signal: AbortSignal) => {
+      if (!orderId) {
+        return Promise.reject(new Error('Order ID is required'));
       }
-    }
 
-    void loadOrder();
-    return () => {
-      mounted = false;
-    };
-  }, [orderId]);
+      return getOrderDetail(orderId, signal);
+    },
+    [orderId]
+  );
+
+  const { data, error, loading } = useAsyncResource(loadOrder, [loadOrder], {
+    enabled: router.isReady && !!orderId,
+  });
 
   return (
     <main className="container">
@@ -79,30 +32,21 @@ export default function OrderDetailPage() {
       </p>
       <h1>Order Detail</h1>
 
-      {loading && <p>Loading order detail...</p>}
-      {error && <p className="error">{error}</p>}
+      {loading && <StateMessage tone="muted" message="Loading order detail..." />}
+      {!loading && error && <StateMessage tone="error" message={error} />}
 
-      {!loading && !error && order && (
+      {!loading && !error && data && (
         <>
           <section className="card">
-            <h2>{order.order_id}</h2>
-            <p>Status: {order.status}</p>
-            <p>Total: {order.total ?? 0}</p>
-            <p className="muted">Updated: {new Date(order.updated_at).toLocaleString()}</p>
+            <h2>{data.data.order.order_id}</h2>
+            <p>Status: {data.data.order.status}</p>
+            <p>Total: {data.data.order.total ?? 0}</p>
+            <p className="muted">Updated: {new Date(data.data.order.updated_at).toLocaleString()}</p>
           </section>
 
           <section className="card">
             <h3>Shipments</h3>
-            {shipments.length === 0 && <p className="muted">No shipment yet.</p>}
-            {shipments.length > 0 && (
-              <ul className="inline-list">
-                {shipments.map((shipment) => (
-                  <li key={shipment.shipment_id}>
-                    {shipment.shipment_id} | {shipment.status} | {shipment.carrier}
-                  </li>
-                ))}
-              </ul>
-            )}
+            <ShipmentList shipments={data.data.shipments} />
           </section>
         </>
       )}
